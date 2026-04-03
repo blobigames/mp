@@ -32,14 +32,25 @@ const server = http.createServer((req, res) => {
     path: parsedTarget.pathname + parsedTarget.search,
     method: req.method,
     headers: {
-      ...req.headers,
-      host: "melon-sandbox.io",
-      referer: TARGET_ORIGIN + GAME_PATH,
-      origin: TARGET_ORIGIN,
+      "host": "melon-sandbox.io",
+      "referer": TARGET_ORIGIN + GAME_PATH,
+      "origin": TARGET_ORIGIN,
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "accept-language": "en-US,en;q=0.9",
+      "accept-encoding": "gzip, deflate, br",
+      "connection": "keep-alive",
+      "upgrade-insecure-requests": "1",
     },
   };
 
   const proxyReq = https.request(options, (proxyRes) => {
+    // Handle redirects
+    if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers.location) {
+      res.writeHead(302, { "Location": proxyRes.headers.location.replace(TARGET_ORIGIN, workerOrigin) });
+      return res.end();
+    }
+
     const headers = { ...proxyRes.headers };
     delete headers["x-frame-options"];
     delete headers["content-security-policy"];
@@ -49,13 +60,15 @@ const server = http.createServer((req, res) => {
 
     const contentType = headers["content-type"] || "";
     if (contentType.includes("text/html")) {
-      let body = "";
-      proxyRes.on("data", chunk => body += chunk);
+      let chunks = [];
+      proxyRes.on("data", chunk => chunks.push(chunk));
       proxyRes.on("end", () => {
+        let body = Buffer.concat(chunks).toString("utf8");
         body = body.replace(new RegExp(TARGET_ORIGIN.replace(/\./g, "\\."), "g"), workerOrigin);
         body = body.replace("<head>", "<head>" + SW_UNREGISTER);
         body = body.replace(/navigator\.serviceWorker\.register\([^)]+\)/g, "Promise.resolve()");
         delete headers["content-length"];
+        delete headers["content-encoding"];
         res.writeHead(proxyRes.statusCode, headers);
         res.end(body);
       });
@@ -66,6 +79,7 @@ const server = http.createServer((req, res) => {
   });
 
   proxyReq.on("error", (e) => {
+    console.error("Fetch failed:", e.message);
     res.writeHead(502);
     res.end("Fetch failed: " + e.message);
   });
